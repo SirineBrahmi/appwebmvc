@@ -1,5 +1,6 @@
 const admin = require('firebase-admin');
 const db = admin.database();
+const sendEmail = require('../utils/sendEmail');
 
 class AdminFormationsModel {
   static async getAllFormations() {
@@ -71,7 +72,6 @@ class AdminFormationsModel {
 
   static async deleteCategory(categoryId) {
     try {
-      // Vérifier si la catégorie est utilisée
       const formationsSnapshot = await db.ref('formations')
         .orderByChild('categorieId')
         .equalTo(categoryId)
@@ -96,6 +96,16 @@ class AdminFormationsModel {
       }
 
       const formation = formationSnapshot.val();
+      
+      // Récupérer les infos du formateur
+      const formateurSnapshot = await db.ref(`utilisateurs/formateurs/${formation.formateurId}`).once('value');
+      const formateur = formateurSnapshot.val();
+      
+      if (!formateur) {
+        throw new Error('Formateur non trouvé');
+      }
+
+      // Mettre à jour le statut
       await db.ref(`formations/${formationId}`).update({ 
         statut: newStatus,
         dateMaj: new Date().toISOString()
@@ -109,6 +119,19 @@ class AdminFormationsModel {
         });
       }
 
+      // Envoyer l'email de notification
+      const emailSubject = `Mise à jour du statut de votre formation`;
+      const emailHtml = `
+        <p>Bonjour ${formateur.prenom},</p>
+        <p>Le statut de votre formation <strong>"${formation.intitule}"</strong> a été modifié à <strong>"${newStatus}"</strong>.</p>
+        <p>Date de mise à jour : ${new Date().toLocaleString()}</p>
+        ${newStatus === 'validée' ? '<p>Félicitations ! Votre formation a été approuvée.</p>' : ''}
+        <p>Cordialement,</p>
+        <p>L'équipe de la plateforme</p>
+      `;
+
+      await sendEmail(formateur.email, emailSubject, emailHtml);
+
       return formation;
     } catch (error) {
       console.error('Error in updateFormationStatus:', error);
@@ -118,20 +141,40 @@ class AdminFormationsModel {
 
   static async updateFormation(formationId, updates) {
     try {
+      const formationSnapshot = await db.ref(`formations/${formationId}`).once('value');
+      const formation = formationSnapshot.val();
+      
       await db.ref(`formations/${formationId}`).update({
         ...updates,
         dateMaj: new Date().toISOString()
       });
 
-      if (updates.statut === 'validée' || updates.statut === 'publiée') {
-        const formationSnapshot = await db.ref(`formations/${formationId}`).once('value');
-        const formation = formationSnapshot.val();
-        
-        await db.ref(`categories/${formation.categorieId}/formations/${formationId}`).update({
-          ...formation,
-          ...updates,
-          dateMaj: new Date().toISOString()
-        });
+      if (updates.statut) {
+        // Récupérer les infos du formateur si le statut change
+        const formateurSnapshot = await db.ref(`utilisateurs/formateurs/${formation.formateurId}`).once('value');
+        const formateur = formateurSnapshot.val();
+
+        if (formateur) {
+          const emailSubject = `Mise à jour du statut de votre formation`;
+          const emailHtml = `
+            <p>Bonjour ${formateur.prenom},</p>
+            <p>Le statut de votre formation <strong>"${formation.intitule}"</strong> a été modifié à <strong>"${updates.statut}"</strong>.</p>
+            <p>Date de mise à jour : ${new Date().toLocaleString()}</p>
+            ${updates.statut === 'validée' ? '<p>Félicitations ! Votre formation a été approuvée.</p>' : ''}
+            <p>Cordialement,</p>
+            <p>L'équipe de la plateforme</p>
+          `;
+
+          await sendEmail(formateur.email, emailSubject, emailHtml);
+        }
+
+        if (updates.statut === 'validée' || updates.statut === 'publiée') {
+          await db.ref(`categories/${formation.categorieId}/formations/${formationId}`).update({
+            ...formation,
+            ...updates,
+            dateMaj: new Date().toISOString()
+          });
+        }
       }
     } catch (error) {
       console.error('Error in updateFormation:', error);
